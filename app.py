@@ -367,6 +367,24 @@ def listen_commands():
                         first = orders[0]
                         fields = {k: v for k, v in first.items() if k not in ("products",)}
                         send_telegram(f"📋 Pola zamówienia:\n{json.dumps(fields, ensure_ascii=False, indent=1)[:3000]}")
+                elif text in ("/debug3",):
+                    send_telegram("🔍 Szukam zwrotów wśród zamówień (ostatnie 30 dni)...")
+                    raw = bl_request("getOrders", {
+                        "date_confirmed_from": int(time.time()) - 86400 * 30,
+                        "get_unconfirmed_orders": False,
+                    })
+                    orders = raw.get("orders", [])
+                    # Zbieramy unikalne statusy
+                    statuses = {}
+                    for o in orders:
+                        sid = str(o.get("order_status_id", ""))
+                        if sid not in statuses:
+                            statuses[sid] = {"count": 0, "example_id": o.get("order_id")}
+                        statuses[sid]["count"] += 1
+                    msg = f"📋 Statusy zamówień (ostatnie 30 dni, {len(orders)} zam.):\n"
+                    for sid, info in sorted(statuses.items()):
+                        msg += f"  ID {sid}: {info['count']} szt. (np. zamówienie {info['example_id']})\n"
+                    send_telegram(msg[:3000])
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
                         "📋 <b>Dostępne komendy:</b>\n"
