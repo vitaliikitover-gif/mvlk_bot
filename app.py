@@ -340,6 +340,19 @@ def listen_commands():
 
                 if text in ("/stats", "/statystyki"):
                     send_stats_now()
+                elif text in ("/debug",):
+                    # Sprawdzamy co zwraca getReturns
+                    send_telegram("🔍 Sprawdzam getReturns...")
+                    now = datetime.now(tz)
+                    start_of_day = int(datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz).timestamp())
+                    raw = bl_request("getReturns", {"date_from": start_of_day})
+                    if not raw:
+                        send_telegram("❌ getReturns zwrócił pusty wynik lub błąd. Metoda może być niedostępna w tym planie.")
+                    else:
+                        keys = list(raw.keys())
+                        returns = raw.get("returns", [])
+                        first = str(returns[0])[:300] if returns else "brak zwrotów dziś"
+                        send_telegram(f"✅ getReturns odpowiedział\nKlucze: {keys}\nLiczba zwrotów dziś: {len(returns)}\nPierwszy: {first}")
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
                         "📋 <b>Dostępne komendy:</b>\n"
