@@ -28,10 +28,12 @@ tz = pytz.timezone(TIMEZONE)
 
 # Zapamiętujemy ostatni sprawdzony czas (unix timestamp)
 state = {
-    "last_order_check":   int(time.time()) - 300,   # start: 5 min wstecz
+    "last_order_check":   int(time.time()) - 300,
     "last_message_check": int(time.time()) - 300,
+    "last_return_check":  int(time.time()) - 300,
     "seen_order_ids":     set(),
     "seen_message_ids":   set(),
+    "seen_return_ids":    set(),
 }
 
 # Liczniki dzienne
@@ -192,17 +194,56 @@ def check_messages():
         state["seen_message_ids"] = set(list(state["seen_message_ids"])[-2000:])
 
 
+# ─── SPRAWDZANIE ZWROTÓW ─────────────────────────────────────────────────────
+def check_returns():
+    print("[Poll] Sprawdzam zwroty...")
+    now = int(time.time())
+
+    data = bl_request("getReturns", {
+        "date_from": state["last_return_check"],
+    })
+
+    returns = data.get("returns", [])
+
+    for ret in returns:
+        return_id = str(ret.get("return_id") or ret.get("id") or "")
+        if not return_id or return_id in state["seen_return_ids"]:
+            continue
+        state["seen_return_ids"].add(return_id)
+
+        amount   = float(ret.get("price") or ret.get("amount") or ret.get("price_brutto") or 0)
+        order_id = str(ret.get("order_id") or "—")
+        buyer    = ret.get("buyer_login") or ret.get("buyer") or ""
+        products = ret.get("products", [])
+        product_name = products[0].get("name", "") if products else ""
+
+        msg = (
+            f"🔴 <b>Nowy zwrot</b>\n"
+            f"💸 Kwota: -{amount:.2f} zł\n"
+            f"🔢 Zamówienie: {order_id}"
+        )
+        if buyer:
+            msg += f"\n👤 {buyer}"
+        if product_name:
+            msg += f"\n📦 {product_name}"
+        send_telegram(msg)
+
+    state["last_return_check"] = now
+    if len(state["seen_return_ids"]) > 5000:
+        state["seen_return_ids"] = set(list(state["seen_return_ids"])[-2000:])
+
+
 # ─── POLLING: oba zadania razem ───────────────────────────────────────────────
 def poll():
     check_orders()
+    check_returns()
     check_messages()
 
 
 # ─── OBSŁUGA KOMEND TELEGRAM ──────────────────────────────────────────────────
 def fetch_todays_stats() -> dict:
-    """Pobiera z Baselinker wszystkie zamówienia od początku dzisiejszego dnia."""
+    """Pobiera z Baselinker zamówienia i zwroty od początku dzisiejszego dnia."""
     now = datetime.now(tz)
-    # Początek dzisiejszego dnia (00:00:00) jako unix timestamp
     start_of_day = int(datetime(now.year, now.month, now.day, 0, 0, 0,
                                 tzinfo=tz).timestamp())
 
@@ -211,19 +252,17 @@ def fetch_todays_stats() -> dict:
     returns_count = 0
     returns_total = 0.0
 
-    # Baselinker zwraca max 100 zamówień na raz — paginacja przez date_confirmed_from
+    # ── Zamówienia ────────────────────────────────────────────────────────────
     cursor = start_of_day
     seen   = set()
-
     while True:
         data = bl_request("getOrders", {
-            "date_confirmed_from":   cursor,
+            "date_confirmed_from":    cursor,
             "get_unconfirmed_orders": False,
         })
         orders = data.get("orders", [])
         if not orders:
             break
-
         new_orders = False
         for order in orders:
             order_id = str(order.get("order_id", ""))
@@ -231,25 +270,21 @@ def fetch_todays_stats() -> dict:
                 continue
             seen.add(order_id)
             new_orders = True
-
             amount = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
-            status = str(order.get("order_status_id", ""))
-            is_return = order.get("is_return", False) or status in ("140", "141", "142")
-
             order_time = order.get("date_add", cursor)
             if order_time > cursor:
                 cursor = order_time
-
-            if is_return:
-                returns_count += 1
-                returns_total += amount
-            else:
-                sales_count += 1
-                sales_total += amount
-
-        # Jeśli nie było nowych — koniec paginacji
+            sales_count += 1
+            sales_total += amount
         if not new_orders:
             break
+
+    # ── Zwroty (osobny endpoint) ──────────────────────────────────────────────
+    ret_data = bl_request("getReturns", {"date_from": start_of_day})
+    for ret in ret_data.get("returns", []):
+        amount = float(ret.get("price") or ret.get("amount") or ret.get("price_brutto") or 0)
+        returns_count += 1
+        returns_total += amount
 
     return {
         "sales_count":   sales_count,
