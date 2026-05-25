@@ -199,16 +199,80 @@ def poll():
 
 
 # ─── OBSŁUGA KOMEND TELEGRAM ──────────────────────────────────────────────────
+def fetch_todays_stats() -> dict:
+    """Pobiera z Baselinker wszystkie zamówienia od początku dzisiejszego dnia."""
+    now = datetime.now(tz)
+    # Początek dzisiejszego dnia (00:00:00) jako unix timestamp
+    start_of_day = int(datetime(now.year, now.month, now.day, 0, 0, 0,
+                                tzinfo=tz).timestamp())
+
+    sales_count   = 0
+    sales_total   = 0.0
+    returns_count = 0
+    returns_total = 0.0
+
+    # Baselinker zwraca max 100 zamówień na raz — paginacja przez date_confirmed_from
+    cursor = start_of_day
+    seen   = set()
+
+    while True:
+        data = bl_request("getOrders", {
+            "date_confirmed_from":   cursor,
+            "get_unconfirmed_orders": False,
+        })
+        orders = data.get("orders", [])
+        if not orders:
+            break
+
+        new_orders = False
+        for order in orders:
+            order_id = str(order.get("order_id", ""))
+            if order_id in seen:
+                continue
+            seen.add(order_id)
+            new_orders = True
+
+            amount = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
+            status = str(order.get("order_status_id", ""))
+            is_return = order.get("is_return", False) or status in ("140", "141", "142")
+
+            order_time = order.get("date_add", cursor)
+            if order_time > cursor:
+                cursor = order_time
+
+            if is_return:
+                returns_count += 1
+                returns_total += amount
+            else:
+                sales_count += 1
+                sales_total += amount
+
+        # Jeśli nie było nowych — koniec paginacji
+        if not new_orders:
+            break
+
+    return {
+        "sales_count":   sales_count,
+        "sales_total":   sales_total,
+        "returns_count": returns_count,
+        "returns_total": returns_total,
+    }
+
+
 def send_stats_now():
-    """Wysyła aktualną statystykę na żądanie."""
+    """Pobiera statystyki z Baselinker w czasie rzeczywistym i wysyła do Telegram."""
     now_str = datetime.now(tz).strftime("%H:%M")
-    net  = daily_stats["sales_total"] - daily_stats["returns_total"]
+    send_telegram("⏳ Pobieram dane z Baselinker...")
+
+    stats = fetch_todays_stats()
+
+    net  = stats["sales_total"] - stats["returns_total"]
     sign = "+" if net >= 0 else ""
     msg = (
         f"📊 <b>Statystyki na dziś ({now_str})</b>\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sprzedaż:  {daily_stats['sales_count']} zam. / +{daily_stats['sales_total']:.2f} zł\n"
-        f"🔴 Zwroty:    {daily_stats['returns_count']} szt. / -{daily_stats['returns_total']:.2f} zł\n"
+        f"🟢 Sprzedaż:  {stats['sales_count']} zam. / +{stats['sales_total']:.2f} zł\n"
+        f"🔴 Zwroty:    {stats['returns_count']} szt. / -{stats['returns_total']:.2f} zł\n"
         "━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Wynik: {sign}{net:.2f} zł</b>"
     )
@@ -254,13 +318,15 @@ def listen_commands():
 
 # ─── PODSUMOWANIE DNIA ────────────────────────────────────────────────────────
 def send_daily_summary():
-    net  = daily_stats["sales_total"] - daily_stats["returns_total"]
+    """Podsumowanie dnia — dane pobierane z Baselinker."""
+    stats = fetch_todays_stats()
+    net  = stats["sales_total"] - stats["returns_total"]
     sign = "+" if net >= 0 else ""
     msg = (
         "📊 <b>Podsumowanie dnia</b>\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sprzedaż:  {daily_stats['sales_count']} zam. / +{daily_stats['sales_total']:.2f} zł\n"
-        f"🔴 Zwroty:    {daily_stats['returns_count']} szt. / -{daily_stats['returns_total']:.2f} zł\n"
+        f"🟢 Sprzedaż:  {stats['sales_count']} zam. / +{stats['sales_total']:.2f} zł\n"
+        f"🔴 Zwroty:    {stats['returns_count']} szt. / -{stats['returns_total']:.2f} zł\n"
         "━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Wynik: {sign}{net:.2f} zł</b>"
     )
