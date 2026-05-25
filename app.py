@@ -353,6 +353,20 @@ def listen_commands():
                         returns = raw.get("returns", [])
                         first = str(returns[0])[:300] if returns else "brak zwrotów dziś"
                         send_telegram(f"✅ getReturns odpowiedział\nKlucze: {keys}\nLiczba zwrotów dziś: {len(returns)}\nPierwszy: {first}")
+                elif text in ("/debug2",):
+                    send_telegram("🔍 Sprawdzam strukturę zamówień...")
+                    raw = bl_request("getOrders", {
+                        "date_confirmed_from": int(time.time()) - 86400 * 7,
+                        "get_unconfirmed_orders": False,
+                    })
+                    orders = raw.get("orders", [])
+                    if not orders:
+                        send_telegram("❌ Brak zamówień z ostatnich 7 dni")
+                    else:
+                        # Pokaż pola pierwszego zamówienia
+                        first = orders[0]
+                        fields = {k: v for k, v in first.items() if k not in ("products",)}
+                        send_telegram(f"📋 Pola zamówienia:\n{json.dumps(fields, ensure_ascii=False, indent=1)[:3000]}")
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
                         "📋 <b>Dostępne komendy:</b>\n"
