@@ -7,8 +7,9 @@ i wysyła powiadomienia do Telegram.
 import os
 import json
 import time
+import threading
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
@@ -197,6 +198,60 @@ def poll():
     check_messages()
 
 
+# ─── OBSŁUGA KOMEND TELEGRAM ──────────────────────────────────────────────────
+def send_stats_now():
+    """Wysyła aktualną statystykę na żądanie."""
+    now_str = datetime.now(tz).strftime("%H:%M")
+    net  = daily_stats["sales_total"] - daily_stats["returns_total"]
+    sign = "+" if net >= 0 else ""
+    msg = (
+        f"📊 <b>Statystyki na dziś ({now_str})</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"🟢 Sprzedaż:  {daily_stats['sales_count']} zam. / +{daily_stats['sales_total']:.2f} zł\n"
+        f"🔴 Zwroty:    {daily_stats['returns_count']} szt. / -{daily_stats['returns_total']:.2f} zł\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Wynik: {sign}{net:.2f} zł</b>"
+    )
+    send_telegram(msg)
+
+
+def listen_commands():
+    """Słucha komend od użytkownika przez long polling Telegram."""
+    offset = None
+    print("[Commands] Słucham komend...")
+    while True:
+        try:
+            params = {"timeout": 30, "allowed_updates": ["message"]}
+            if offset:
+                params["offset"] = offset
+            resp = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params=params, timeout=40
+            )
+            data = resp.json()
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+                text = msg.get("text", "").strip().lower()
+
+                # Только от авторизованного чата
+                if chat_id != str(TELEGRAM_CHAT_ID):
+                    continue
+
+                if text in ("/stats", "/statystyki"):
+                    send_stats_now()
+                elif text in ("/help", "/pomoc"):
+                    send_telegram(
+                        "📋 <b>Dostępne komendy:</b>\n"
+                        "/stats — statystyki za dziś\n"
+                        "/help — lista komend"
+                    )
+        except Exception as e:
+            print(f"[Commands ERROR] {e}")
+            time.sleep(5)
+
+
 # ─── PODSUMOWANIE DNIA ────────────────────────────────────────────────────────
 def send_daily_summary():
     net  = daily_stats["sales_total"] - daily_stats["returns_total"]
@@ -231,6 +286,10 @@ if __name__ == "__main__":
 
     # Pierwsze sprawdzenie od razu
     poll()
+
+    # Wątek słuchający komend (/stats, /help)
+    cmd_thread = threading.Thread(target=listen_commands, daemon=True)
+    cmd_thread.start()
 
     # Trzymamy proces żywy
     try:
