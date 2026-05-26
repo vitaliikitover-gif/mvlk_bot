@@ -240,9 +240,13 @@ def listen_commands():
                 offset  = update["update_id"] + 1
                 msg     = update.get("message", {})
                 chat_id = str(msg.get("chat", {}).get("id", ""))
-                text    = msg.get("text", "").strip().lower()
+                text = msg.get("text", "").strip().lower()
+                # Strip bot username suffix (e.g. /stats@MVLK_orders_bot → /stats)
+                if "@" in text:
+                    text = text.split("@")[0]
 
                 if chat_id != str(TELEGRAM_CHAT_ID):
+                    print(f"[Commands] Ignored message from chat {chat_id}")
                     continue
 
                 if text in ("/stats",):
