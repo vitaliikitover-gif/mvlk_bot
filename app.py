@@ -26,6 +26,21 @@ BASELINKER_API_URL  = "https://api.baselinker.com/connector.php"
 
 tz = pytz.timezone(TIMEZONE)
 
+# Mapa source_id → nazwa konta (ładowana przy starcie)
+SOURCE_MAP: dict = {}
+
+def load_source_map():
+    """Pobiera nazwy kont Allegro z Baselinker."""
+    global SOURCE_MAP
+    data = bl_request("getOrderSources", {})
+    allegro = data.get("sources", {}).get("allegro", {})
+    SOURCE_MAP = {str(k): v for k, v in allegro.items()}
+    print(f"[Sources] Załadowano: {SOURCE_MAP}")
+
+def get_account_name(order: dict) -> str:
+    source_id = str(order.get("order_source_id", ""))
+    return SOURCE_MAP.get(source_id) or order.get("order_source", "Allegro")
+
 state = {
     "last_order_check":   int(time.time()) - 300,
     "last_message_check": int(time.time()) - 300,
@@ -85,19 +100,31 @@ def check_orders():
         state["seen_order_ids"].add(order_id)
 
         amount       = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
-        source_info  = order.get("order_source", "Allegro")
-        account      = order.get("extra_field_1") or source_info or "Allegro"
+        account      = get_account_name(order)
         products     = order.get("products", [])
-        product_name = products[0].get("name", "") if products else ""
+        is_return    = order.get("order_source") == "order_return"
 
-        msg = (
-            f"🟢 <b>Nowe zamówienie</b>\n"
-            f"🏪 Konto: {account}\n"
-            f"💵 Kwota: +{amount:.2f} zł\n"
-            f"🔢 Nr: {order_id}"
-        )
-        if product_name:
-            msg += f"\n📦 {product_name}"
+        # All products
+        product_lines = ""
+        for p in products:
+            name = p.get("name", "")
+            qty  = p.get("quantity", 1)
+            if name:
+                product_lines += f"\n📦 {name}" + (f" x{qty}" if qty > 1 else "")
+
+        if is_return:
+            msg = (
+                f"🔴 <b>Return</b>\n"
+                f"🏪 {account}\n"
+                f"💸 -{amount:.2f} zł"
+            )
+        else:
+            msg = (
+                f"🟢 <b>New order</b>\n"
+                f"🏪 {account}\n"
+                f"💵 +{amount:.2f} zł"
+            )
+        msg += product_lines
         send_telegram(msg)
 
     state["last_order_check"] = now
@@ -131,9 +158,9 @@ def check_messages():
             content = content[:120] + "…"
 
         msg = (
-            f"💬 <b>Nowa wiadomość</b>\n"
-            f"👤 Od: {buyer}\n"
-            f"🔢 Zamówienie: {order_id}\n"
+            f"💬 <b>New message</b>\n"
+            f"👤 From: {buyer}\n"
+            f"🔢 Order: {order_id}\n"
             f"✉️ {content}"
         )
         send_telegram(msg)
@@ -188,13 +215,13 @@ def fetch_todays_stats() -> dict:
 
 def send_stats_now():
     now_str = datetime.now(tz).strftime("%H:%M")
-    send_telegram("⏳ Pobieram dane z Baselinker...")
+    send_telegram("⏳ Fetching data from Baselinker...")
     stats = fetch_todays_stats()
     msg = (
-        f"📊 <b>Statystyki na dziś ({now_str})</b>\n"
+        f"📊 <b>Today's stats ({now_str})</b>\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sprzedaż: {stats['sales_count']} zam.\n"
-        f"💰 <b>Suma: +{stats['sales_total']:.2f} zł</b>"
+        f"🟢 Sales: {stats['sales_count']} orders\n"
+        f"💰 <b>Total: +{stats['sales_total']:.2f} zł</b>"
     )
     send_telegram(msg)
 
@@ -202,10 +229,10 @@ def send_stats_now():
 def send_daily_summary():
     stats = fetch_todays_stats()
     msg = (
-        "📊 <b>Podsumowanie dnia</b>\n"
+        "📊 <b>Daily summary</b>\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sprzedaż: {stats['sales_count']} zam.\n"
-        f"💰 <b>Suma: +{stats['sales_total']:.2f} zł</b>"
+        f"🟢 Sales: {stats['sales_count']} orders\n"
+        f"💰 <b>Total: +{stats['sales_total']:.2f} zł</b>"
     )
     send_telegram(msg)
 
@@ -259,9 +286,9 @@ def listen_commands():
                             send_telegram(f"❌ {method} — niedostępne")
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
-                        "📋 <b>Dostępne komendy:</b>\n"
-                        "/stats — statystyki za dziś\n"
-                        "/help — lista komend"
+                        "📋 <b>Available commands:</b>\n"
+                        "/stats — today's stats\n"
+                        "/help — list of commands"
                     )
         except Exception as e:
             print(f"[Commands ERROR] {e}")
@@ -271,7 +298,8 @@ def listen_commands():
 # ─── START ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print(f"[Start] Bot uruchomiony. Polling co {POLL_INTERVAL_SEC}s | TZ: {TIMEZONE}")
-    send_telegram("✅ <b>Bot Allegro uruchomiony</b>\nMonitoruję zamówienia i wiadomości...")
+    load_source_map()
+    send_telegram("✅ <b>Allegro Bot started</b>\nMonitoring orders and messages...")
 
     scheduler = BackgroundScheduler(timezone=tz)
     scheduler.add_job(poll,              IntervalTrigger(seconds=POLL_INTERVAL_SEC))
