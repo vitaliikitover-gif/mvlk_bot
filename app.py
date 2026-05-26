@@ -303,6 +303,27 @@ def listen_commands():
                             send_telegram(f"✅ {method}:\n{json.dumps(raw, ensure_ascii=False)[:2000]}")
                         else:
                             send_telegram(f"❌ {method} — niedostępne")
+                elif text in ("/debug5",):
+                    send_telegram("🔍 Szukam zwrotów w zamówieniach (30 dni)...")
+                    raw = bl_request("getOrders", {
+                        "date_confirmed_from": int(time.time()) - 86400 * 30,
+                        "get_unconfirmed_orders": True,
+                    })
+                    orders = raw.get("orders", [])
+                    sources = {}
+                    returns_found = []
+                    for o in orders:
+                        src = o.get("order_source", "")
+                        sources[src] = sources.get(src, 0) + 1
+                        if "return" in str(src).lower() or "zwrot" in str(src).lower():
+                            returns_found.append(o)
+                    msg = f"📋 Źródła ({len(orders)} zam.):\n"
+                    for src, cnt in sources.items():
+                        msg += f"  '{src}': {cnt}\n"
+                    if returns_found:
+                        r = returns_found[0]
+                        msg += f"\nPrzykład zwrotu:\nsource={r.get('order_source')}\nsource_id={r.get('order_source_id')}\nstatus={r.get('order_status_id')}"
+                    send_telegram(msg[:3000])
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
                         "📋 <b>Available commands:</b>\n"
