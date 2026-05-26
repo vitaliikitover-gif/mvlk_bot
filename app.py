@@ -248,6 +248,15 @@ def listen_commands():
                         first = orders[0]
                         fields = {k: v for k, v in first.items() if k not in ("products",)}
                         send_telegram(f"📋 Pola:\n{json.dumps(fields, ensure_ascii=False, indent=1)[:3000]}")
+                elif text in ("/debug4",):
+                    send_telegram("🔍 Szukam nazw integracji...")
+                    # Próbujemy różne metody
+                    for method in ("getOrderSources", "getIntegrationsList", "getStoragesList"):
+                        raw = bl_request(method, {})
+                        if raw:
+                            send_telegram(f"✅ {method}:\n{json.dumps(raw, ensure_ascii=False)[:2000]}")
+                        else:
+                            send_telegram(f"❌ {method} — niedostępne")
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
                         "📋 <b>Dostępne komendy:</b>\n"
