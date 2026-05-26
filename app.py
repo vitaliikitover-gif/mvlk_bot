@@ -159,7 +159,6 @@ def check_messages():
 # ─── POLL ─────────────────────────────────────────────────────────────────────
 def poll():
     check_orders()
-    check_messages()
 
 
 # ─── STATS ────────────────────────────────────────────────────────────────────
@@ -245,8 +244,9 @@ def listen_commands():
                 if "@" in text:
                     text = text.split("@")[0]
 
-                if chat_id != str(TELEGRAM_CHAT_ID):
-                    print(f"[Commands] Ignored message from chat {chat_id}")
+                # Accept commands from the configured chat only
+                # (group ID or personal ID — both allowed)
+                if chat_id not in (str(TELEGRAM_CHAT_ID), "421633181"):
                     continue
 
                 if text in ("/stats",):
