@@ -181,8 +181,10 @@ def fetch_todays_stats() -> dict:
     now = datetime.now(tz)
     start_of_day = int(datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz).timestamp())
 
-    sales_count = 0
-    sales_total = 0.0
+    sales_count   = 0
+    sales_total   = 0.0
+    returns_count = 0
+    returns_total = 0.0
     cursor = start_of_day
     seen   = set()
 
@@ -205,34 +207,51 @@ def fetch_todays_stats() -> dict:
             order_time = order.get("date_add", cursor)
             if order_time > cursor:
                 cursor = order_time
-            sales_count += 1
-            sales_total += amount
+            if order.get("order_source") == "order_return":
+                returns_count += 1
+                returns_total += amount
+            else:
+                sales_count += 1
+                sales_total += amount
         if not new_orders:
             break
 
-    return {"sales_count": sales_count, "sales_total": sales_total}
+    return {
+        "sales_count":   sales_count,
+        "sales_total":   sales_total,
+        "returns_count": returns_count,
+        "returns_total": returns_total,
+    }
 
 
 def send_stats_now():
     now_str = datetime.now(tz).strftime("%H:%M")
     send_telegram("⏳ Fetching data from Baselinker...")
     stats = fetch_todays_stats()
+    net  = stats["sales_total"] - stats["returns_total"]
+    sign = "+" if net >= 0 else ""
     msg = (
         f"📊 <b>Today's stats ({now_str})</b>\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sales: {stats['sales_count']} orders\n"
-        f"💰 <b>Total: +{stats['sales_total']:.2f} zł</b>"
+        f"🟢 Sales: {stats['sales_count']} orders / +{stats['sales_total']:.2f} zł\n"
+        f"🔴 Returns: {stats['returns_count']} / -{stats['returns_total']:.2f} zł\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Net: {sign}{net:.2f} zł</b>"
     )
     send_telegram(msg)
 
 
 def send_daily_summary():
     stats = fetch_todays_stats()
+    net  = stats["sales_total"] - stats["returns_total"]
+    sign = "+" if net >= 0 else ""
     msg = (
         "📊 <b>Daily summary</b>\n"
         "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sales: {stats['sales_count']} orders\n"
-        f"💰 <b>Total: +{stats['sales_total']:.2f} zł</b>"
+        f"🟢 Sales: {stats['sales_count']} orders / +{stats['sales_total']:.2f} zł\n"
+        f"🔴 Returns: {stats['returns_count']} / -{stats['returns_total']:.2f} zł\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Net: {sign}{net:.2f} zł</b>"
     )
     send_telegram(msg)
 
