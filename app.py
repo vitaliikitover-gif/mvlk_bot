@@ -235,6 +235,19 @@ def listen_commands():
 
                 if text in ("/stats", "/statystyki"):
                     send_stats_now()
+                elif text in ("/debug2",):
+                    send_telegram("🔍 Sprawdzam pola zamówienia...")
+                    raw = bl_request("getOrders", {
+                        "date_confirmed_from": int(time.time()) - 86400 * 7,
+                        "get_unconfirmed_orders": False,
+                    })
+                    orders = raw.get("orders", [])
+                    if not orders:
+                        send_telegram("❌ Brak zamówień z ostatnich 7 dni")
+                    else:
+                        first = orders[0]
+                        fields = {k: v for k, v in first.items() if k not in ("products",)}
+                        send_telegram(f"📋 Pola:\n{json.dumps(fields, ensure_ascii=False, indent=1)[:3000]}")
                 elif text in ("/help", "/pomoc"):
                     send_telegram(
                         "📋 <b>Dostępne komendy:</b>\n"
