@@ -84,11 +84,19 @@ def load_return_statuses():
     """Find status IDs that contain 'zwrot' in their name."""
     global RETURN_STATUS_IDS
     data = bl_request("getOrderStatusList", {})
-    statuses = data.get("statuses", {})
-    for sid, info in statuses.items():
-        name = info.get("name", "").lower() if isinstance(info, dict) else str(info).lower()
-        if "zwrot" in name:
-            RETURN_STATUS_IDS.add(str(sid))
+    statuses = data.get("statuses", [])
+    # API returns either a list or a dict
+    if isinstance(statuses, list):
+        for item in statuses:
+            name = str(item.get("name", "")).lower()
+            sid  = str(item.get("id", ""))
+            if "zwrot" in name and sid:
+                RETURN_STATUS_IDS.add(sid)
+    else:
+        for sid, info in statuses.items():
+            name = info.get("name", "").lower() if isinstance(info, dict) else str(info).lower()
+            if "zwrot" in name:
+                RETURN_STATUS_IDS.add(str(sid))
     print(f"[Statuses] Return status IDs: {RETURN_STATUS_IDS}")
 
 
