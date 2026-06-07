@@ -1,6 +1,6 @@
 """
 Allegro → Telegram Bot (API Polling)
-Checks new orders and messages every 2 minutes via Baselinker API.
+Checks new orders and returns every 2 minutes via Baselinker API.
 """
 
 import os
@@ -28,11 +28,13 @@ tz = pytz.timezone(TIMEZONE)
 # Account name map: source_id → account name
 SOURCE_MAP: dict = {}
 
+# Status IDs that mean "return" — loaded at startup
+RETURN_STATUS_IDS: set = set()
+
 state = {
-    "last_order_check":   int(time.time()) - 300,
-    "last_message_check": int(time.time()) - 300,
-    "seen_order_ids":     set(),
-    "seen_message_ids":   set(),
+    "last_order_check":  int(time.time()) - 300,
+    "seen_order_ids":    set(),
+    "seen_return_ids":   set(),  # track orders already flagged as returns
 }
 
 
@@ -77,9 +79,26 @@ def load_source_map():
     SOURCE_MAP = {str(k): v for k, v in allegro.items()}
     print(f"[Sources] Loaded: {SOURCE_MAP}")
 
+
+def load_return_statuses():
+    """Find status IDs that contain 'zwrot' in their name."""
+    global RETURN_STATUS_IDS
+    data = bl_request("getOrderStatusList", {})
+    statuses = data.get("statuses", {})
+    for sid, info in statuses.items():
+        name = info.get("name", "").lower() if isinstance(info, dict) else str(info).lower()
+        if "zwrot" in name:
+            RETURN_STATUS_IDS.add(str(sid))
+    print(f"[Statuses] Return status IDs: {RETURN_STATUS_IDS}")
+
+
 def get_account_name(order: dict) -> str:
     source_id = str(order.get("order_source_id", ""))
     return SOURCE_MAP.get(source_id) or order.get("order_source", "Allegro")
+
+def is_return_order(order: dict) -> bool:
+    status_id = str(order.get("order_status_id", ""))
+    return status_id in RETURN_STATUS_IDS
 
 
 # ─── CHECK ORDERS ─────────────────────────────────────────────────────────────
@@ -91,69 +110,47 @@ def check_orders():
     })
     for order in data.get("orders", []):
         order_id = str(order.get("order_id", ""))
-        if order_id in state["seen_order_ids"]:
-            continue
-        state["seen_order_ids"].add(order_id)
-
-        # Skip returns
-        if order.get("order_source") == "order_return":
-            continue
-
-        amount   = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
         account  = get_account_name(order)
-        products = order.get("products", [])
+        amount   = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
 
-        product_lines = ""
-        for p in products:
-            name = p.get("name", "")
-            qty  = p.get("quantity", 1)
-            if name:
-                product_lines += f"\n📦 {name}" + (f" x{qty}" if qty > 1 else "")
+        if is_return_order(order):
+            # New return notification (only once per order)
+            if order_id in state["seen_return_ids"]:
+                continue
+            state["seen_return_ids"].add(order_id)
+            state["seen_order_ids"].add(order_id)
+            send_telegram(
+                f"🔴 <b>Return</b>\n"
+                f"🏪 {account}\n"
+                f"💸 -{amount:.2f} zł"
+            )
+        else:
+            # New order notification
+            if order_id in state["seen_order_ids"]:
+                continue
+            state["seen_order_ids"].add(order_id)
 
-        msg = (
-            f"🟢 <b>New order</b>\n"
-            f"🏪 {account}\n"
-            f"💵 +{amount:.2f} zł"
-        )
-        msg += product_lines
-        send_telegram(msg)
+            products = order.get("products", [])
+            product_lines = ""
+            for p in products:
+                name = p.get("name", "")
+                qty  = p.get("quantity", 1)
+                if name:
+                    product_lines += f"\n📦 {name}" + (f" x{qty}" if qty > 1 else "")
+
+            msg = (
+                f"🟢 <b>New order</b>\n"
+                f"🏪 {account}\n"
+                f"💵 +{amount:.2f} zł"
+            )
+            msg += product_lines
+            send_telegram(msg)
 
     state["last_order_check"] = now
     if len(state["seen_order_ids"]) > 5000:
         state["seen_order_ids"] = set(list(state["seen_order_ids"])[-2000:])
-
-
-# ─── CHECK MESSAGES ───────────────────────────────────────────────────────────
-def check_messages():
-    now = int(time.time())
-    data = bl_request("getOrderMessages", {
-        "date_from": state["last_message_check"],
-    })
-    for msg_data in data.get("messages", []):
-        msg_id = str(msg_data.get("message_id", ""))
-        if msg_id in state["seen_message_ids"]:
-            continue
-        state["seen_message_ids"].add(msg_id)
-
-        if msg_data.get("type", 0) not in (1, "1"):
-            continue
-
-        order_id = str(msg_data.get("order_id", "—"))
-        buyer    = msg_data.get("login") or msg_data.get("author") or "Buyer"
-        content  = msg_data.get("message", "") or ""
-        if len(content) > 120:
-            content = content[:120] + "…"
-
-        send_telegram(
-            f"💬 <b>New message</b>\n"
-            f"👤 From: {buyer}\n"
-            f"🔢 Order: {order_id}\n"
-            f"✉️ {content}"
-        )
-
-    state["last_message_check"] = now
-    if len(state["seen_message_ids"]) > 5000:
-        state["seen_message_ids"] = set(list(state["seen_message_ids"])[-2000:])
+    if len(state["seen_return_ids"]) > 5000:
+        state["seen_return_ids"] = set(list(state["seen_return_ids"])[-2000:])
 
 
 # ─── POLL ─────────────────────────────────────────────────────────────────────
@@ -163,11 +160,17 @@ def poll():
 
 # ─── STATS ────────────────────────────────────────────────────────────────────
 def fetch_todays_stats() -> dict:
+    """
+    Returns per-account stats for today:
+    {
+      "mvlk":    {"sales_count": 5, "sales_total": 500.0, "returns_count": 1, "returns_total": 89.0},
+      "mvlk_pl": {...},
+    }
+    """
     now = datetime.now(tz)
     start_of_day = int(datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz).timestamp())
 
-    sales_count = 0
-    sales_total = 0.0
+    per_account = {}
     cursor = start_of_day
     seen   = set()
 
@@ -186,40 +189,76 @@ def fetch_todays_stats() -> dict:
                 continue
             seen.add(order_id)
             new_orders = True
+
             order_time = order.get("date_add", cursor)
             if order_time > cursor:
                 cursor = order_time
-            if order.get("order_source") == "order_return":
-                continue
-            amount = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
-            sales_count += 1
-            sales_total += amount
+
+            account = get_account_name(order)
+            amount  = float(order.get("payment_done", 0) or order.get("price_brutto", 0) or 0)
+
+            if account not in per_account:
+                per_account[account] = {
+                    "sales_count": 0, "sales_total": 0.0,
+                    "returns_count": 0, "returns_total": 0.0,
+                }
+
+            if is_return_order(order):
+                per_account[account]["returns_count"] += 1
+                per_account[account]["returns_total"] += amount
+            else:
+                per_account[account]["sales_count"] += 1
+                per_account[account]["sales_total"] += amount
+
         if not new_orders:
             break
 
-    return {"sales_count": sales_count, "sales_total": sales_total}
+    return per_account
+
+
+def build_stats_message(per_account: dict, title: str, time_str: str = "") -> str:
+    if not per_account:
+        return f"📊 <b>{title}</b>\nNo orders today."
+
+    header = f"📊 <b>{title}</b>" + (f" ({time_str})" if time_str else "")
+    lines = [header]
+
+    total_sales = 0.0
+    total_returns = 0.0
+
+    for account, s in sorted(per_account.items()):
+        net  = s["sales_total"] - s["returns_total"]
+        sign = "+" if net >= 0 else ""
+        lines.append(
+            f"\n🏪 <b>{account}</b>\n"
+            f"  🟢 {s['sales_count']} orders / +{s['sales_total']:.2f} zł\n"
+            f"  🔴 {s['returns_count']} returns / -{s['returns_total']:.2f} zł\n"
+            f"  💰 Net: {sign}{net:.2f} zł"
+        )
+        total_sales   += s["sales_total"]
+        total_returns += s["returns_total"]
+
+    if len(per_account) > 1:
+        total_net  = total_sales - total_returns
+        total_sign = "+" if total_net >= 0 else ""
+        lines.append(
+            f"\n━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Total: {total_sign}{total_net:.2f} zł</b>"
+        )
+
+    return "\n".join(lines)
 
 
 def send_stats_now():
     now_str = datetime.now(tz).strftime("%H:%M")
     send_telegram("⏳ Fetching data from Baselinker...")
-    stats = fetch_todays_stats()
-    send_telegram(
-        f"📊 <b>Today's stats ({now_str})</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sales: {stats['sales_count']} orders\n"
-        f"💰 <b>Total: +{stats['sales_total']:.2f} zł</b>"
-    )
+    per_account = fetch_todays_stats()
+    send_telegram(build_stats_message(per_account, "Today's stats", now_str))
 
 
 def send_daily_summary():
-    stats = fetch_todays_stats()
-    send_telegram(
-        "📊 <b>Daily summary</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
-        f"🟢 Sales: {stats['sales_count']} orders\n"
-        f"💰 <b>Total: +{stats['sales_total']:.2f} zł</b>"
-    )
+    per_account = fetch_todays_stats()
+    send_telegram(build_stats_message(per_account, "Daily summary"))
 
 
 # ─── COMMANDS ─────────────────────────────────────────────────────────────────
@@ -239,22 +278,19 @@ def listen_commands():
                 offset  = update["update_id"] + 1
                 msg     = update.get("message", {})
                 chat_id = str(msg.get("chat", {}).get("id", ""))
-                text = msg.get("text", "").strip().lower()
-                # Strip bot username suffix (e.g. /stats@MVLK_orders_bot → /stats)
+                text    = msg.get("text", "").strip().lower()
                 if "@" in text:
                     text = text.split("@")[0]
 
-                # Accept commands from the configured chat only
-                # (group ID or personal ID — both allowed)
                 if chat_id not in (str(TELEGRAM_CHAT_ID), "421633181"):
                     continue
 
-                if text in ("/stats",):
+                if text == "/stats":
                     send_stats_now()
-                elif text in ("/help",):
+                elif text == "/help":
                     send_telegram(
                         "📋 <b>Available commands:</b>\n"
-                        "/stats — today's stats\n"
+                        "/stats — today's stats per account\n"
                         "/help — list of commands"
                     )
         except Exception as e:
@@ -266,7 +302,8 @@ def listen_commands():
 if __name__ == "__main__":
     print(f"[Start] Bot running. Polling every {POLL_INTERVAL_SEC}s | TZ: {TIMEZONE}")
     load_source_map()
-    send_telegram("✅ <b>Allegro Bot started</b>\nMonitoring orders and messages...")
+    load_return_statuses()
+    send_telegram("✅ <b>Allegro Bot started</b>\nMonitoring orders and returns...")
 
     scheduler = BackgroundScheduler(timezone=tz)
     scheduler.add_job(poll,               IntervalTrigger(seconds=POLL_INTERVAL_SEC))
