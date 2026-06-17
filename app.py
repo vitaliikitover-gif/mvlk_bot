@@ -295,6 +295,22 @@ def listen_commands():
 
                 if text == "/stats":
                     send_stats_now()
+                elif text == "/debug7":
+                    send_telegram(f"🔍 Return status IDs found: {RETURN_STATUS_IDS or 'NONE'}")
+                    raw = bl_request("getOrders", {
+                        "date_confirmed_from": int(time.time()) - 86400 * 14,
+                        "get_unconfirmed_orders": False,
+                    })
+                    orders = raw.get("orders", [])
+                    status_counts = {}
+                    for o in orders:
+                        sid = str(o.get("order_status_id", ""))
+                        status_counts[sid] = status_counts.get(sid, 0) + 1
+                    msg = f"📋 Statuses in last 14 days ({len(orders)} orders):\n"
+                    for sid, cnt in sorted(status_counts.items()):
+                        flag = " ← RETURN" if sid in RETURN_STATUS_IDS else ""
+                        msg += f"ID {sid}: {cnt}{flag}\n"
+                    send_telegram(msg[:3500])
                 elif text == "/help":
                     send_telegram(
                         "📋 <b>Available commands:</b>\n"
